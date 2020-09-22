@@ -18,6 +18,8 @@ import gc
 # utilities
 from itertools import chain
 
+import category_encoders as ce
+
 class FeatureSelector():
     """
     Class for performing feature selection for machine learning or data preprocessing.
@@ -34,7 +36,6 @@ class FeatureSelector():
     --------
         data : dataframe
             A dataset with observations in the rows and features in the columns
-
         labels : array or series, default = None
             Array of labels for training the machine learning model to find feature importances. These can be either binary labels
             (if task is 'classification') or continuous targets (if task is 'regression').
@@ -159,18 +160,14 @@ class FeatureSelector():
         Finds collinear features based on the correlation coefficient between features. 
         For each pair of features with a correlation coefficient greather than `correlation_threshold`,
         only one of the pair is identified for removal. 
-
         Using code adapted from: https://chrisalbon.com/machine_learning/feature_selection/drop_highly_correlated_features/
         
         Parameters
         --------
-
         correlation_threshold : float between 0 and 1
             Value of the Pearson correlation cofficient for identifying correlation features
-
         one_hot : boolean, default = False
             Whether to one-hot encode the features before calculating the correlation coefficients
-
         """
         
         self.correlation_threshold = correlation_threshold
@@ -227,7 +224,7 @@ class FeatureSelector():
         print('%d features with a correlation magnitude greater than %0.2f.\n' % (len(self.ops['collinear']), self.correlation_threshold))
 
     def identify_zero_importance(self, task, eval_metric=None, 
-                                 n_iterations=10, early_stopping = True):
+                                 n_iterations=10, early_stopping = True, categorical_features = None, categorical_method = None):
         """
         
         Identify the features with zero importance according to a gradient boosting machine.
@@ -235,17 +232,13 @@ class FeatureSelector():
         The feature importances are averaged over `n_iterations` to reduce variance. 
         
         Uses the LightGBM implementation (http://lightgbm.readthedocs.io/en/latest/index.html)
-
         Parameters 
         --------
-
         eval_metric : string
             Evaluation metric to use for the gradient boosting machine for early stopping. Must be
             provided if `early_stopping` is True
-
         task : string
             The machine learning task, either 'classification' or 'regression'
-
         n_iterations : int, default = 10
             Number of iterations to train the gradient boosting machine
             
@@ -259,7 +252,6 @@ class FeatureSelector():
         - Features are one-hot encoded to handle the categorical variables before training.
         - The gbm is not optimized for any particular task and might need some hyperparameter tuning
         - Feature importances, including zero importance features, can change across runs
-
         """
 
         if early_stopping and eval_metric is None:
@@ -269,19 +261,15 @@ class FeatureSelector():
         if self.labels is None:
             raise ValueError("No training labels provided.")
         
-        # One hot encoding
-        features = pd.get_dummies(self.data)
-        self.one_hot_features = [column for column in features.columns if column not in self.base_features]
+#         # One hot encoding
+#         features = pd.get_dummies(self.data)
+#         self.one_hot_features = [column for column in features.columns if column not in self.base_features]
 
-        # Add one hot encoded data to original data
-        self.data_all = pd.concat([features[self.one_hot_features], self.data], axis = 1)
+#         # Add one hot encoded data to original data
+#         self.data_all = pd.concat([features[self.one_hot_features], self.data], axis = 1)
 
         # Extract feature names
         feature_names = list(features.columns)
-
-        # Convert to np array
-        features = np.array(features)
-        labels = np.array(self.labels).reshape((-1, ))
 
         # Empty array for feature importances
         feature_importance_values = np.zeros(len(feature_names))
@@ -302,9 +290,14 @@ class FeatureSelector():
                 
             # If training using early stopping need a validation set
             if early_stopping:
+                train_features, valid_features, train_labels, valid_labels = train_test_split(features, self.labels, test_size = 0.15, stratify=labels)
+                train_features, valid_features = self.treat_categorical_features(categorical_features, 
+                                                                                 categorical_method, 
+                                                                                 train_features,
+                                                                                 train_labels,
+                                                                                 valid_features)
                 
-                train_features, valid_features, train_labels, valid_labels = train_test_split(features, labels, test_size = 0.15, stratify=labels)
-
+                    
                 # Train the model with early stopping
                 model.fit(train_features, train_labels, eval_metric = eval_metric,
                           eval_set = [(valid_features, valid_labels)],
@@ -347,12 +340,10 @@ class FeatureSelector():
         of the total feature importance from the gradient boosting machine. As an example, if cumulative
         importance is set to 0.95, this will retain only the most important features needed to 
         reach 95% of the total feature importance. The identified features are those not needed.
-
         Parameters
         --------
         cumulative_importance : float between 0 and 1
             The fraction of cumulative importance to account for 
-
         """
 
         self.cumulative_importance = cumulative_importance
@@ -377,7 +368,24 @@ class FeatureSelector():
                                                                             len(self.record_low_importance), self.cumulative_importance))
         print('%d features do not contribute to cumulative importance of %0.2f.\n' % (len(self.ops['low_importance']),
                                                                                                self.cumulative_importance))
+    
+    def treat_categorical_features(self, categorical_features, categorical_method, X_train, y_train, X_test):
+        """
+        Deal with categorical features
+        """
         
+        if categorical_features is None or categorical_method is None: 
+            return X_train, X_test
+        
+        X_train[categorical_method] = X_train[categorical_method].fillna('MISSING')
+        X_test[categorical_method] = X_test[categorical_method].fillna('MISSING')
+
+        enc = ce.CatBoostEncoder(cols = categorical_features, drop_invariant = False).fit(X_train, y_train)
+        X_train = enc.transform(X_train)
+        X_test = enc.transform(X_test)
+        
+        return X_train, X_test      
+    
     def identify_all(self, selection_params):
         """
         Use all five of the methods to identify features to remove.
@@ -387,7 +395,7 @@ class FeatureSelector():
             
         selection_params : dict
            Parameters to use in the five feature selection methhods.
-           Params must contain the keys ['missing_threshold', 'correlation_threshold', 'eval_metric', 'task', 'cumulative_importance']
+           Params must contain the keys ['missing_threshold', 'correlation_threshold', 'eval_metric', 'task', 'cumulative_importance', 'categorical_features',                                            'categorical_method']
         
         """
         
@@ -400,7 +408,10 @@ class FeatureSelector():
         self.identify_missing(selection_params['missing_threshold'])
         self.identify_single_unique()
         self.identify_collinear(selection_params['correlation_threshold'])
-        self.identify_zero_importance(task = selection_params['task'], eval_metric = selection_params['eval_metric'])
+        self.identify_zero_importance(task = selection_params['task'], 
+                                      eval_metric = selection_params['eval_metric'], 
+                                      categorical_features = selection_params['categorical_feature'],
+                                      categorical_method = selection_params['categorical_method'])
         self.identify_low_importance(selection_params['cumulative_importance'])
         
         # Find the number of features identified to drop
@@ -591,7 +602,6 @@ class FeatureSelector():
         """
         Plots `plot_n` most important features and the cumulative importance of features.
         If `threshold` is provided, prints the number of features needed to reach `threshold` cumulative importance.
-
         Parameters
         --------
         
@@ -600,7 +610,6 @@ class FeatureSelector():
         
         threshold : float, between 0 and 1 default = None
             Threshold for printing information about cumulative importances
-
         """
         
         if self.record_zero_importance is None:
