@@ -269,7 +269,7 @@ class FeatureSelector():
 #         self.data_all = pd.concat([features[self.one_hot_features], self.data], axis = 1)
 
         # Extract feature names
-        feature_names = list(features.columns)
+        feature_names = list(self.data.columns)
 
         # Empty array for feature importances
         feature_importance_values = np.zeros(len(feature_names))
@@ -290,7 +290,7 @@ class FeatureSelector():
                 
             # If training using early stopping need a validation set
             if early_stopping:
-                train_features, valid_features, train_labels, valid_labels = train_test_split(features, self.labels, test_size = 0.15, stratify=labels)
+                train_features, valid_features, train_labels, valid_labels = train_test_split(self.data, self.labels, test_size = 0.15, stratify = self.labels)
                 train_features, valid_features = self.treat_categorical_features(categorical_features, 
                                                                                  categorical_method, 
                                                                                  train_features,
@@ -377,8 +377,8 @@ class FeatureSelector():
         if categorical_features is None or categorical_method is None: 
             return X_train, X_test
         
-        X_train[categorical_method] = X_train[categorical_method].fillna('MISSING')
-        X_test[categorical_method] = X_test[categorical_method].fillna('MISSING')
+        X_train[categorical_features] = X_train[categorical_features].fillna('MISSING')
+        X_test[categorical_features] = X_test[categorical_features].fillna('MISSING')
 
         enc = ce.CatBoostEncoder(cols = categorical_features, drop_invariant = False).fit(X_train, y_train)
         X_train = enc.transform(X_train)
@@ -410,7 +410,7 @@ class FeatureSelector():
         self.identify_collinear(selection_params['correlation_threshold'])
         self.identify_zero_importance(task = selection_params['task'], 
                                       eval_metric = selection_params['eval_metric'], 
-                                      categorical_features = selection_params['categorical_feature'],
+                                      categorical_features = selection_params['categorical_features'],
                                       categorical_method = selection_params['categorical_method'])
         self.identify_low_importance(selection_params['cumulative_importance'])
         
